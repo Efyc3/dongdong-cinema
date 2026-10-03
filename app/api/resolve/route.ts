@@ -1,0 +1,2 @@
+import {resolveEpisode} from "@/lib/site-sources";
+export async function GET(request:Request){const p=new URL(request.url).searchParams;try{return Response.json({url:await resolveEpisode(p.get("provider")||"",p.get("id")||"",p.get("token")||"",p.get("line")||"")},{headers:{"Cache-Control":"private, max-age=120"}});}catch(e){return Response.json({error:e instanceof Error?e.message:"分流暂不可用"},{status:502});}}
