@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import OfflineBoot from "@/components/offline-boot";
 
 export const metadata: Metadata = {
   title: "咚咚映画 · 影视漫画",
@@ -20,7 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><OfflineBoot/>{children}</body>
     </html>
   );
 }
