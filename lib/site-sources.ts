@@ -2,6 +2,9 @@ import {load} from "cheerio";
 import {safeUrl,text,normalizedTitle,classify,type Work,type Source,type PlayRoute,type ProviderStatus,type Kind} from "./media";
 import {siteProviders} from "./site-provider-info";
 import {upstreamFetch as fetch} from "./upstream-fetch";
+import {anime1Search,anime1Detail,anime1Resolve} from "./anime1";
+import {directMedia,publicPlayerMedia} from "./public-player";
+export {directMedia} from "./public-player";
 type SiteId=typeof siteProviders[number]["id"];
 const origins=Object.fromEntries(siteProviders.map(p=>[p.id,p.url]));
 const cache=new Map<string,{expires:number;body:string}>();
@@ -37,6 +40,8 @@ export async function siteSearch(query:string,kind:string,page=1){
     const $=load(await read("ddys","/?s="+encodeURIComponent(q)+"&post_type=post"));
     const items=$("article.post-box[data-href]").toArray().map(e=>{const el=$(e),id=el.attr("data-href")?.match(/^\/vod\/(\d+)\/$/)?.[1],title=text(el.find(".post-box-image img").attr("alt"),200),k=classify(el.find(".post-box-meta").text(),title);return id&&k&&normalizedTitle(title).includes(normalizedTitle(q))&&(kind==="all"||kind===k)?{id,kind:k}:null;}).filter(v=>v!==null).slice(0,8);
     matches=(await Promise.allSettled(items.map(async v=>ddysMeta(await read("ddys","/vod/"+v.id+"/"),v.id,v.kind)))).flatMap(r=>r.status==="fulfilled"&&r.value.title?[r.value]:[]);
+   }else if(p.id==="anime1"){
+    matches=await anime1Search(q);
    }else if(p.id==="skr1"){
     const $=load(await read("skr1","/vodsearch/-------------/?wd="+encodeURIComponent(q)));
     $(".searchlist_item").each((_i,e)=>{const el=$(e),a=el.find("a.vodlist_thumb").first(),id=a.attr("href")?.match(/^\/voddetail\/(\d+)\/$/)?.[1],h=el.find("h4.vodlist_title a").first().clone(),category=h.find(".info_right").text();h.find(".info_right").remove();const title=text(h.text(),200),k=/日漫|国漫|美漫|番/.test(category)?"anime":classify(category,title);if(id&&k&&normalizedTitle(title).includes(normalizedTitle(q))&&(kind==="all"||kind===k))matches.push(work("skr1",id,title,k,text(el.find(".voddate_year").text()),image("skr1",a.attr("data-original"))));});
@@ -57,7 +62,8 @@ function animeMeta(provider:"skr1"|"girigiri",html:string,id:string):Work{
  const w=work(provider,id,title,"anime",year,image(provider,img));w.description=text($("meta[name=description]").attr("content"));w.area="日本";return w;
 }
 export async function siteDetail(providerId:string,id:string):Promise<Work>{
- const provider=checked(providerId,id),path=provider==="ddys"?"/vod/"+id+"/":provider==="skr1"?"/voddetail/"+id+"/":"/GV"+id+"/";
+ const provider=checked(providerId,id);if(provider==="anime1")return anime1Detail(id);
+ const path=provider==="ddys"?"/vod/"+id+"/":provider==="skr1"?"/voddetail/"+id+"/":"/GV"+id+"/";
  const html=await read(provider,path),$=load(html),w=provider==="ddys"?ddysMeta(html,id):animeMeta(provider,html,id),routes:PlayRoute[]=[];
  if(!w.title)throw new Error("作品已下架或无法读取");
  if(provider==="ddys"){
@@ -72,17 +78,16 @@ export async function siteDetail(providerId:string,id:string):Promise<Work>{
  }
  w.sources[0].routes=routes;w.sources[0].subtitleHint=routes.some(r=>/简中|繁中/.test(r.name));return w;
 }
-export function directMedia(value:unknown){const url=safeUrl(value);if(!url||!/^https:\/\//.test(url)||! /\.(?:m3u8|mp4|webm|m4v)(?:[?#]|$)/i.test(url))return "";const h=new URL(url).hostname;if(/^(?:localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|\[)|\.local$/.test(h))return "";return url;}
 export async function resolveEpisode(providerId:string,id:string,token:string,line=""){
  const provider=checked(providerId,id);let url="";
+ if(provider==="anime1")return anime1Resolve(id,token);
  if(provider==="ddys"){
   if(!/^(?:ep\d{1,4}|lan_guang|hd|zheng_pian)$/.test(token)||! /^[a-z0-9_]{1,30}$/.test(line))throw new Error("无效播放项");
   const d=JSON.parse(await read(provider,"/ddrk_plays/"+id+"/"+token));url=(d.video_plays||[]).find((v:any)=>String(v.src_site)===line&&directMedia(v.play_data))?.play_data||"";
  }else{
   if(!/^\d{1,3}-\d{1,4}$/.test(token))throw new Error("无效集数");
   const html=await read(provider,provider==="skr1"?"/vodplay/"+id+"-"+token+"/":"/playGV"+id+"-"+token+"/");
-  const raw=html.match(/var\s+player_\w+\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/i)?.[1];if(!raw)throw new Error("暂无兼容的播放地址");const p=JSON.parse(raw);if(Number(p.points)>0||Number(p.trysee)>0)throw new Error("此播放项需要来源授权");
-  url=Number(p.encrypt)===2?decodeURIComponent(Buffer.from(p.url,"base64").toString("utf8")):Number(p.encrypt)===1?decodeURIComponent(p.url):p.url;
+  url=publicPlayerMedia(html,origins[provider]);
  }
  const result=directMedia(url);if(!result)throw new Error("此集暂时没有兼容的播放地址");return result;
 }

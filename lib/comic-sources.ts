@@ -1,6 +1,6 @@
-import {load} from "cheerio";
 import {isUUID,normalizedTitle,safeUrl,text,type Work,type ProviderStatus} from "./media";
 import {upstreamFetch} from "./upstream-fetch";
+import {copySlug,copyPublicImageUrl,copyPublicCover,copyPublicChapters,copyPublicPages} from "./copymanga";
 const cache=new Map<string,{until:number;value:any}>();
 async function read(url:string,body?:unknown){
  const key=url+JSON.stringify(body??null),old=cache.get(key);if(old&&old.until>Date.now())return old.value;
@@ -13,12 +13,12 @@ async function komiic(operationName:string,query:string,variables:unknown){
  const d=await json("https://komiic.com/api/query",{operationName,query,variables});if(d.errors?.length)throw new Error("Komiic 暂时无法读取");return d.data;
 }
 const comicId=(id:string)=>/^\d{1,12}$/.test(id);
-const copyId=(id:string)=>/^[a-z0-9_-]{1,180}$/i.test(id);
+const copyId=copySlug;
 function comicWork(provider:"komiic"|"mangacopy",v:any):Work|null{
  const id=String(provider==="komiic"?v.id:v.path_word||""),title=text(provider==="komiic"?v.title:v.name,200);
  if(!title||!(provider==="komiic"?comicId(id):copyId(id)))return null;
  const year=provider==="komiic"?String(v.year||""):"",url=provider==="komiic"?"https://komiic.com/comic/"+id:"https://mangacopy.com/comic/"+id;
- return {key:"manga|"+year+"|"+normalizedTitle(title),title,year,kind:"manga",poster:"/api/manga?provider="+provider+"&op=cover&id="+encodeURIComponent(id),description:text(v.description||"",2000),area:"",language:"中文",director:"",actor:(v.authors||v.author||[]).map((a:any)=>text(a.name,80)).join(" / "),douban:"",sources:[],mangaSources:[{provider,name:provider==="komiic"?"Komiic":"拷贝漫画",id,url,mode:provider==="komiic"?"inline":"external"}]};
+ return {key:"manga|"+year+"|"+normalizedTitle(title),title,year,kind:"manga",poster:"/api/manga?provider="+provider+"&op=cover&id="+encodeURIComponent(id),description:text(v.description||"",2000),area:"",language:"中文",director:"",actor:(v.authors||v.author||[]).map((a:any)=>text(a.name,80)).join(" / "),douban:"",sources:[],mangaSources:[{provider,name:provider==="komiic"?"Komiic":"拷贝漫画",id,url,mode:"inline"}]};
 }
 export async function comicSearch(q:string,page:number){
  const providers=[{id:"komiic",name:"Komiic"},{id:"mangacopy",name:"拷贝漫画"}];const works:Work[]=[],statuses:ProviderStatus[]=[];
@@ -34,10 +34,11 @@ export async function comicSearch(q:string,page:number){
 }
 export async function comicCover(provider:string,id:string){
  if(provider==="komiic"&&comicId(id)){const d=await komiic("comicById","query comicById($comicId: ID!) { comicById(comicId: $comicId) { imageUrl } }",{comicId:id});const url=safeUrl(d.comicById?.imageUrl);if(new URL(url).hostname!=="public.komiic.com")throw new Error("无效封面");return url;}
- if(provider==="mangacopy"&&copyId(id)){const $=load(await read("https://mangacopy.com/comic/"+id));const url=safeUrl($(".comicParticulars-left-img img").attr("data-src")||$(".comicParticulars-left-img img").attr("src"));if(!copyImageUrl(url))throw new Error("无效封面");return url;}
+ if(provider==="mangacopy"&&copyId(id))return copyPublicCover(id);
  throw new Error("无效漫画");
 }
 export async function comicChapters(provider:string,id:string){
+ if(provider==="mangacopy")return copyPublicChapters(id);
  if(provider==="komiic"&&comicId(id)){
   const d=await komiic("chapterByComicId","query chapterByComicId($comicId: ID!) { chaptersByComicId(comicId: $comicId) { id serial type size } }",{comicId:id});
   const chapters=(d.chaptersByComicId||[]).filter((c:any)=>comicId(String(c.id))).map((c:any)=>({id:String(c.id),chapter:String(c.serial||""),volume:(c.type==="book"||c.type==="volume")?String(c.serial):"",title:"第 "+c.serial+((c.type==="book"||c.type==="volume")?" 卷":" 话"),pages:Number(c.size)||0,lang:"zh-hk",groups:"",externalUrl:""}));
@@ -46,6 +47,7 @@ export async function comicChapters(provider:string,id:string){
  throw new Error("无效漫画");
 }
 export async function comicPages(provider:string,id:string,comic:string):Promise<string[]>{
+ if(provider==="mangacopy")return copyPublicPages(comic,id);
  if(provider==="komiic"&&comicId(id)){
   const d=await komiic("imagesByChapterId","query imagesByChapterId($chapterId: ID!) { imagesByChapterId(chapterId: $chapterId) { kid } }",{chapterId:id});
   const images=(d.imagesByChapterId||[]).map((v:any)=>String(v.kid||"")).filter(isUUID).map((kid:string)=>"https://komiic.com/api/image/"+kid);
@@ -53,4 +55,4 @@ export async function comicPages(provider:string,id:string,comic:string):Promise
  }
  throw new Error("无效章节");
 }
-export function copyImageUrl(url:string){try{const u=new URL(url);return u.protocol==="https:"&&/^(?:[a-z0-9-]+\.)*mangafunb\.fun$/.test(u.hostname)&&!u.username&&!u.password;}catch{return false;}}
+export const copyImageUrl=copyPublicImageUrl;

@@ -7,6 +7,13 @@ const DB_NAME = "dongdong-comic-cache", CACHE_EVENT = "dongdong-comic-cache";
 let database: Promise<IDBDatabase> | undefined;
 export function cachedChapterId(sourceKey: string, chapterId: string, lang: string) { return sourceKey + "|" + chapterId + "|" + lang; }
 function changed() { if (typeof window !== "undefined") window.dispatchEvent(new Event(CACHE_EVENT)); }
+function abortableTransaction(tx: IDBTransaction, signal?: AbortSignal) {
+ const stop = () => { try { tx.abort(); } catch { /* The transaction already committed. */ } };
+ if (signal?.aborted) stop(); else signal?.addEventListener("abort", stop, { once: true });
+ const cleanup = () => signal?.removeEventListener("abort", stop);
+ tx.addEventListener("complete", cleanup, { once: true }); tx.addEventListener("abort", cleanup, { once: true });
+}
+function transactionError(tx: IDBTransaction, signal?: AbortSignal) { return signal?.aborted ? new DOMException("已取消", "AbortError") : storageError(tx.error); }
 function storageError(error: unknown): Error { return new Error((error as DOMException)?.name === "QuotaExceededError" ? "本地空间不足，请清理缓存" : error instanceof Error ? error.message : "本地缓存不可用"); }
 function openDatabase(): Promise<IDBDatabase> {
  if (typeof indexedDB === "undefined") return Promise.reject(new Error("当前浏览器不支持本地缓存"));
@@ -26,10 +33,11 @@ async function readStore<T>(store: string, key?: string): Promise<T> {
 export async function listCachedChapters(): Promise<CachedChapter[]> { return (await readStore<CachedChapter[]>("chapters")).sort((a, b) => b.updatedAt - a.updatedAt); }
 export async function getCachedChapter(id: string): Promise<CachedChapter | null> { return (await readStore<CachedChapter | undefined>("chapters", id)) || null; }
 export async function getCachedPage(chapterId: string, page: number): Promise<Blob | null> { return (await readStore<SavedPage | undefined>("pages", chapterId + "|" + page))?.blob || null; }
-export async function prepareCachedChapter(input: Omit<CachedChapter, "cachedPages" | "complete" | "bytes" | "updatedAt" | "lastPage" | "cachedIndexes">): Promise<CachedChapter> {
- const db = await openDatabase();
+export async function prepareCachedChapter(input: Omit<CachedChapter, "cachedPages" | "complete" | "bytes" | "updatedAt" | "lastPage" | "cachedIndexes">, signal?: AbortSignal): Promise<CachedChapter> {
+ checkAbort(signal); const db = await openDatabase(); checkAbort(signal);
  const record = await new Promise<CachedChapter>((resolve, reject) => {
   const tx = db.transaction(["chapters", "pages"], "readwrite"), store = tx.objectStore("chapters"), pages = tx.objectStore("pages"), request = store.get(input.id); let result: CachedChapter;
+  abortableTransaction(tx, signal);
   request.onsuccess = () => {
    const previous = request.result as CachedChapter | undefined, cachedIndexes = (previous?.cachedIndexes || []).filter(index => input.images[index] !== undefined && previous!.images[index] === input.images[index]);
    const removed = (previous?.cachedIndexes || []).filter(index => !cachedIndexes.includes(index)); let bytes = previous?.bytes || 0, remaining = removed.length;
@@ -37,28 +45,35 @@ export async function prepareCachedChapter(input: Omit<CachedChapter, "cachedPag
    if (!remaining) finish();
    for (const index of removed) { const key = input.id + "|" + index, old = pages.get(key); old.onsuccess = () => { bytes -= (old.result as SavedPage | undefined)?.blob.size || 0; pages.delete(key); if (!--remaining) finish(); }; }
   };
-  tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(storageError(tx.error));
+  tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(transactionError(tx, signal));
  }); changed(); return record;
 }
-export async function saveCachedPage(chapterId: string, page: number, blob: Blob): Promise<CachedChapter> {
- const db = await openDatabase();
+export async function saveCachedPage(chapterId: string, page: number, blob: Blob, signal?: AbortSignal): Promise<CachedChapter> {
+ checkAbort(signal); const db = await openDatabase(); checkAbort(signal);
  const record = await new Promise<CachedChapter>((resolve, reject) => {
   const tx = db.transaction(["chapters", "pages"], "readwrite"), chapters = tx.objectStore("chapters"), pages = tx.objectStore("pages"), get = chapters.get(chapterId); let result: CachedChapter;
+  abortableTransaction(tx, signal);
   get.onsuccess = () => {
    const existing = get.result as CachedChapter | undefined;
    if (!existing || page < 0 || page >= existing.images.length) { tx.abort(); reject(new Error("缓存已移除")); return; }
    const key = chapterId + "|" + page, old = pages.get(key);
    old.onsuccess = () => { const cachedIndexes = [...new Set([...existing.cachedIndexes, page])].sort((a, b) => a - b); result = { ...existing, cachedIndexes, cachedPages: cachedIndexes.length, complete: existing.images.length > 0 && cachedIndexes.length === existing.images.length, bytes: existing.bytes - ((old.result as SavedPage | undefined)?.blob.size || 0) + blob.size, updatedAt: Date.now() }; pages.put({ key, chapterId, index: page, blob } satisfies SavedPage); chapters.put(result); };
   };
-  tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(storageError(tx.error));
+  tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(transactionError(tx, signal));
  }); changed(); return record;
 }
 export async function setCachedReadingPage(id: string, page: number): Promise<void> {
  const db = await openDatabase(); await new Promise<void>((resolve, reject) => { const tx = db.transaction("chapters", "readwrite"), store = tx.objectStore("chapters"), request = store.get(id); request.onsuccess = () => { const record = request.result as CachedChapter | undefined; if (record) store.put({ ...record, lastPage: Math.max(0, Math.min(record.images.length - 1, page)) }); }; tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(storageError(tx.error)); });
 }
-export async function deleteCachedChapter(id: string): Promise<void> {
- const db = await openDatabase(); await new Promise<void>((resolve, reject) => { const tx = db.transaction(["chapters", "pages"], "readwrite"); tx.objectStore("chapters").delete(id); const cursor = tx.objectStore("pages").index("chapterId").openCursor(IDBKeyRange.only(id)); cursor.onsuccess = () => { const item = cursor.result; if (item) { item.delete(); item.continue(); } }; tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(storageError(tx.error)); }); changed();
+export async function deleteCachedChapters(ids: string[]): Promise<void> {
+ const unique = [...new Set(ids)]; if (!unique.length) return;
+ const db = await openDatabase(); await new Promise<void>((resolve, reject) => {
+  const tx = db.transaction(["chapters", "pages"], "readwrite"), chapters = tx.objectStore("chapters"), pages = tx.objectStore("pages").index("chapterId");
+  for (const id of unique) { chapters.delete(id); const cursor = pages.openCursor(IDBKeyRange.only(id)); cursor.onsuccess = () => { const item = cursor.result; if (item) { item.delete(); item.continue(); } }; }
+  tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(storageError(tx.error));
+ }); changed();
 }
+export async function deleteCachedChapter(id: string): Promise<void> { return deleteCachedChapters([id]); }
 export async function clearCachedChapters(): Promise<void> { const db = await openDatabase(); await new Promise<void>((resolve, reject) => { const tx = db.transaction(["chapters", "pages"], "readwrite"); tx.objectStore("chapters").clear(); tx.objectStore("pages").clear(); tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(storageError(tx.error)); }); changed(); }
 
 class ComicImageError extends Error { constructor(message: string, public restricted = false) { super(message); } }
