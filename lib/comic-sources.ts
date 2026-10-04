@@ -18,7 +18,7 @@ function comicWork(provider:"komiic"|"mangacopy",v:any):Work|null{
  const id=String(provider==="komiic"?v.id:v.path_word||""),title=text(provider==="komiic"?v.title:v.name,200);
  if(!title||!(provider==="komiic"?comicId(id):copyId(id)))return null;
  const year=provider==="komiic"?String(v.year||""):"",url=provider==="komiic"?"https://komiic.com/comic/"+id:"https://mangacopy.com/comic/"+id;
- return {key:"manga|"+year+"|"+normalizedTitle(title),title,year,kind:"manga",poster:"/api/manga?provider="+provider+"&op=cover&id="+encodeURIComponent(id),description:text(v.description||"",2000),area:"",language:"中文",director:"",actor:(v.authors||v.author||[]).map((a:any)=>text(a.name,80)).join(" / "),douban:"",sources:[],mangaSources:[{provider,name:provider==="komiic"?"Komiic":"拷贝漫画",id,url,mode:"inline"}]};
+ return {key:"manga|"+year+"|"+normalizedTitle(title),title,year,kind:"manga",poster:"/api/manga?provider="+provider+"&op=cover&id="+encodeURIComponent(id),description:text(v.description||"",2000),area:"",language:"中文",director:"",actor:(v.authors||v.author||[]).map((a:any)=>text(a.name,80)).join(" / "),douban:"",sources:[],mangaSources:[{provider,name:provider==="komiic"?"Komiic":"拷贝漫画",id,url,mode:provider==="komiic"?"inline":"external"}]};
 }
 export async function comicSearch(q:string,page:number){
  const providers=[{id:"komiic",name:"Komiic"},{id:"mangacopy",name:"拷贝漫画"}];const works:Work[]=[],statuses:ProviderStatus[]=[];

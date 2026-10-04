@@ -19,9 +19,21 @@ async function bodyText(response:Response,limit:number){
 }
 async function readPage(path:string,signal:AbortSignal){
  if(state.blockedUntil>Date.now())throw new Error("此来源请求过多，请稍后重试");
- const response=await upstreamFetch(ORIGIN+path,{signal,redirect:"manual",headers:{Accept:"text/html,application/json"}});
- if(!response.ok){void response.body?.cancel();throw unavailable(response.status);}
- return bodyText(response,2_000_000);
+ let target=ORIGIN+path;
+ for(let redirects=0;redirects<=3;redirects++){
+  const response=await upstreamFetch(target,{signal,redirect:"manual",headers:{Accept:"text/html,application/json"}});
+  if([301,302,303,307,308].includes(response.status)){
+   const location=response.headers.get("location");await response.body?.cancel();
+   if(redirects===3)throw new Error("来源重定向过多");
+   if(!location)throw new Error("来源重定向无效");
+   const next=new URL(location,target);
+   if(next.origin!==ORIGIN||next.username||next.password)throw new Error("来源已迁移");
+   target=next.href;continue;
+  }
+  if(!response.ok){void response.body?.cancel();throw unavailable(response.status);}
+  return bodyText(response,2_000_000);
+ }
+ throw new Error("来源重定向过多");
 }
 async function catalog(){
  if(state.catalog&&state.catalog.expires>Date.now())return state.catalog.rows;
@@ -60,7 +72,9 @@ export async function anime1Detail(id:string):Promise<Work>{
   });
   const next=$(".nav-previous a").first().attr("href");remaining="";if(!next)break;
   const target=new URL(next,ORIGIN);
-  if(target.origin!==ORIGIN||!/^\/page\/[1-9]\d?\/?$/.test(target.pathname)||target.searchParams.get("cat")!==id)break;
+  const ownPage=/^\/page\/[1-9]\d?\/?$/.test(target.pathname)&&target.searchParams.get("cat")===id;
+  const ownArchive=target.pathname.startsWith("/category/")&&/\/page\/[1-9]\d?\/?$/.test(target.pathname);
+  if(target.origin!==ORIGIN||target.username||target.password||!ownPage&&!ownArchive)break;
   remaining=target.pathname+target.search;path=remaining;
  }
  const ordered=[...episodes.entries()].sort((a,b)=>Number(a[0])-Number(b[0])).map(([,ep])=>ep);

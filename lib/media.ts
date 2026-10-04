@@ -5,7 +5,7 @@ export type Source = { provider: string; providerName: string; id: string; title
 export type MangaSource = {provider:"mangadex"|"manhuagui"|"komiic"|"mangacopy";name:string;id:string;url:string;mode:"inline"|"external"};
 export type Work = { key: string; title: string; year: string; kind: Kind; poster: string; description: string; area: string; language: string; director: string; actor: string; douban: string; sources: Source[]; mangaId?: string; externalUrl?: string; mangaSources?:MangaSource[]; backdrop?:string; rank?:number; rating?:number };
 export function mangaSources(work:Work):MangaSource[]{
- const list=[...(work.mangaSources||[])];
+ const list=(work.mangaSources||[]).map(s=>s.provider==="mangacopy"?{...s,mode:"external" as const}:s);
  if(work.mangaId&&!list.some(s=>s.provider==="mangadex"&&s.id===work.mangaId))list.push({provider:"mangadex",name:"MangaDex",id:work.mangaId,url:"https://mangadex.org/title/"+work.mangaId,mode:"inline"});
  if(work.externalUrl&&!list.some(s=>s.url===work.externalUrl))list.push({provider:"manhuagui",name:"漫画柜",id:work.externalUrl,url:work.externalUrl,mode:"external"});
  return list;
